@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -52,6 +53,7 @@ import (
 	"github.com/apernet/hysteria/extras/v2/sniff"
 	"github.com/apernet/hysteria/extras/v2/trafficlogger"
 	eUtils "github.com/apernet/hysteria/extras/v2/utils"
+	"github.com/apernet/quic-go"
 )
 
 const (
@@ -1172,6 +1174,27 @@ func genZeroSSLEAB(email string) (*acme.EAB, error) {
 	}, nil
 }
 
+// fillStatelessResetKey derives a stable QUIC stateless-reset key from the local TLS private key
+// file. With it set, packets for connections the server no longer tracks (e.g. dropped at
+// MaxIdleTimeout while a mobile client slept) are answered with a stateless reset, so the client
+// detects the dead connection instantly instead of waiting out its own idle timeout. SHA-256 over
+// the key file keeps the reset key stable across restarts (it changes only on cert rotation,
+// which merely reverts old connections to upstream silence). ACME mode has no stable local key
+// file -- left as upstream (no resets).
+func (c *serverConfig) fillStatelessResetKey(hyConfig *server.Config) error {
+	if c.TLS == nil || c.TLS.Key == "" {
+		return nil
+	}
+	keyPEM, err := os.ReadFile(c.TLS.Key)
+	if err != nil {
+		return configError{Field: "tls.key", Err: err}
+	}
+	sum := sha256.Sum256(append([]byte("hysteria-stateless-reset:"), keyPEM...))
+	srk := quic.StatelessResetKey(sum)
+	hyConfig.StatelessResetKey = &srk
+	return nil
+}
+
 func (c *serverConfig) fillQUICConfig(hyConfig *server.Config) error {
 	hyConfig.QUICConfig = server.QUICConfig{
 		InitialStreamReceiveWindow:     c.QUIC.InitStreamReceiveWindow,
@@ -1586,6 +1609,7 @@ func (c *serverConfig) Config() (*server.Config, error) {
 	fillers := []func(*server.Config) error{
 		c.fillConn,
 		c.fillTLSConfig,
+		c.fillStatelessResetKey,
 		c.fillQUICConfig,
 		c.fillRequestHook,
 		c.fillOutboundConfig,
