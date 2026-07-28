@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/apernet/hysteria/core/v2/server"
+	"github.com/apernet/hysteria/extras/v2/outbounds"
 	"github.com/apernet/hysteria/extras/v2/realm"
 	eUtils "github.com/apernet/hysteria/extras/v2/utils"
 	"github.com/stretchr/testify/assert"
@@ -199,6 +200,7 @@ func TestServerConfig(t *testing.T) {
 				},
 			},
 		},
+		UserOutbounds: map[string]string{"hackerman": "badstuff"},
 		TrafficStats: serverConfigTrafficStats{
 			Listen: ":9999",
 			Secret: "its_me_mario",
@@ -353,4 +355,21 @@ func TestRealmConnectAddrsCacheHit(t *testing.T) {
 	// Mutating the returned slice must not affect the cached one.
 	got[0] = netip.MustParseAddrPort("198.51.100.1:1")
 	assert.Equal(t, want, rt.addrs)
+}
+
+func TestUserOutboundMap(t *testing.T) {
+	direct := outbounds.NewDirectOutboundSimple(outbounds.DirectOutboundModeAuto)
+	socks := outbounds.NewDirectOutboundSimple(outbounds.DirectOutboundMode4)
+	obs := []outbounds.OutboundEntry{
+		{Name: "direct", Outbound: direct},
+		{Name: "u12345", Outbound: socks},
+	}
+
+	m, err := userOutboundMap(map[string]string{"12345": "u12345"}, obs)
+	assert.NoError(t, err)
+	assert.Equal(t, socks, m["12345"].(*outbounds.PluggableOutboundAdapter).PluggableOutbound)
+	assert.Nil(t, m["67890"])
+
+	_, err = userOutboundMap(map[string]string{"12345": "nope"}, obs)
+	assert.Error(t, err)
 }

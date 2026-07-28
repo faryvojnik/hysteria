@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apernet/quic-go"
@@ -144,15 +145,25 @@ type h3sHandler struct {
 	authID        string
 	connID        uint32 // a random id for dump streams
 
+	// Resolved at auth time, config.Outbound unless OutboundForAuthID overrides it.
+	// Atomic because the data paths (handleTCPRequest, udpIO) read it without authMutex.
+	outbound atomic.Pointer[Outbound]
+
 	udpSM *udpSessionManager // Only set after authentication
 }
 
 func newH3sHandler(config *Config, conn *quic.Conn) *h3sHandler {
-	return &h3sHandler{
+	h := &h3sHandler{
 		config: config,
 		conn:   conn,
 		connID: rand.Uint32(),
 	}
+	h.outbound.Store(&config.Outbound)
+	return h
+}
+
+func (h *h3sHandler) getOutbound() Outbound {
+	return *h.outbound.Load()
 }
 
 func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -173,9 +184,16 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		actualTx := authReq.Rx
 		ok, id := h.config.Authenticator.Authenticate(h.conn.RemoteAddr(), authReq.Auth, actualTx)
 		if ok {
-			// Set authenticated flag
-			h.authenticated = true
 			h.authID = id
+			// Per-user outbound, if the hook has one for this id
+			if h.config.OutboundForAuthID != nil {
+				if ob := h.config.OutboundForAuthID(id); ob != nil {
+					h.outbound.Store(&ob)
+				}
+			}
+			// Set authenticated flag last: ProxyStreamHijacker reads it without the
+			// mutex and gates on it, so everything it depends on must already be set.
+			h.authenticated = true
 			if h.config.IgnoreClientBandwidth {
 				// Ignore client bandwidth and use the configured congestion controller.
 				congestion.UseConfigured(h.conn, h.config.CongestionConfig.Type, h.config.CongestionConfig.BBRProfile)
@@ -214,7 +232,7 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !h.config.DisableUDP {
 				go func() {
 					sm := newUDPSessionManager(
-						&udpIOImpl{h.conn, id, h.config.TrafficLogger, h.config.RequestHook, h.config.Outbound},
+						&udpIOImpl{h.conn, id, h.config.TrafficLogger, h.config.RequestHook, h.getOutbound()},
 						&udpEventLoggerImpl{h.conn, id, h.config.EventLogger},
 						h.config.UDPIdleTimeout,
 					)
@@ -302,7 +320,7 @@ func (h *h3sHandler) handleTCPRequest(stream *utils.QStream) {
 	}
 	// Dial target
 	streamStats.State.Store(StreamStateConnecting)
-	tConn, err := h.config.Outbound.TCP(reqAddr)
+	tConn, err := h.getOutbound().TCP(reqAddr)
 	if err != nil {
 		if !hooked {
 			_ = protocol.WriteTCPResponse(stream, false, err.Error())

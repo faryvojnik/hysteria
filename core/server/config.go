@@ -41,6 +41,11 @@ type Config struct {
 	EventLogger           EventLogger
 	TrafficLogger         TrafficLogger
 	MasqHandler           http.Handler
+
+	// OutboundForAuthID, if set, is called once per session with the authenticated
+	// user id. A non-nil return replaces Outbound for that session; a nil return
+	// (or a nil func) keeps Outbound. Destination-based routing (ACL) is unaffected.
+	OutboundForAuthID func(authID string) Outbound
 }
 
 // fill fills the fields that are not set by the user with default values when possible,

@@ -90,6 +90,7 @@ type serverConfig struct {
 	Sniff                 serverConfigSniff           `mapstructure:"sniff"`
 	ACL                   serverConfigACL             `mapstructure:"acl"`
 	Outbounds             []serverConfigOutboundEntry `mapstructure:"outbounds"`
+	UserOutbounds         map[string]string           `mapstructure:"userOutbounds"`
 	TrafficStats          serverConfigTrafficStats    `mapstructure:"trafficStats"`
 	Masquerade            serverConfigMasquerade      `mapstructure:"masquerade"`
 }
@@ -1286,6 +1287,21 @@ func (c *serverConfig) fillRequestHook(hyConfig *server.Config) error {
 	return nil
 }
 
+// userOutboundMap resolves userOutbounds (auth user id -> outbound name) against the
+// outbounds already built from the config, so the server can pick an outbound per
+// authenticated user. Note that these bypass ACL/resolver - they are the raw outbound.
+func userOutboundMap(userOutbounds map[string]string, obs []outbounds.OutboundEntry) (map[string]server.Outbound, error) {
+	m := make(map[string]server.Outbound, len(userOutbounds))
+	for authID, name := range userOutbounds {
+		i := slices.IndexFunc(obs, func(e outbounds.OutboundEntry) bool { return e.Name == name })
+		if i < 0 {
+			return nil, configError{Field: "userOutbounds", Err: fmt.Errorf("outbound %q not found", name)}
+		}
+		m[authID] = &outbounds.PluggableOutboundAdapter{PluggableOutbound: obs[i].Outbound}
+	}
+	return m, nil
+}
+
 func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 	// Resolver, ACL, actual outbound are all implemented through the Outbound interface.
 	// Depending on the config, we build a chain like this:
@@ -1322,6 +1338,15 @@ func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 			}
 			obs[i] = outbounds.OutboundEntry{Name: entry.Name, Outbound: ob}
 		}
+	}
+
+	// Per-user outbounds
+	if len(c.UserOutbounds) > 0 {
+		uobs, err := userOutboundMap(c.UserOutbounds, obs)
+		if err != nil {
+			return err
+		}
+		hyConfig.OutboundForAuthID = func(authID string) server.Outbound { return uobs[authID] }
 	}
 
 	var uOb outbounds.PluggableOutbound // "unified" outbound

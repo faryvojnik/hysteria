@@ -157,6 +157,9 @@ outbounds:
       url: https://eyy.lmao:4443/goofy
       insecure: true
 
+userOutbounds:
+  hackerman: badstuff
+
 trafficStats:
   listen: :9999
   secret: its_me_mario
