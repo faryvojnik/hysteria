@@ -13,6 +13,8 @@ require (
 	github.com/miekg/dns v1.1.72
 	github.com/pion/stun/v3 v3.1.6
 	github.com/refraction-networking/utls v1.8.2
+	github.com/sagernet/sing v0.3.2
+	github.com/sagernet/sing-shadowsocks v0.2.6
 	github.com/stretchr/testify v1.11.1
 	github.com/txthinking/socks5 v0.0.0-20230325130024-4230056ae301
 	golang.org/x/crypto v0.54.0
@@ -28,6 +30,7 @@ require (
 	github.com/huin/goupnp v1.2.0 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/koron/go-ssdp v0.0.4 // indirect
 	github.com/libp2p/go-netroute v0.2.1 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
@@ -46,6 +49,7 @@ require (
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	lukechampine.com/blake3 v1.2.1 // indirect
 )
 
 replace github.com/apernet/hysteria/core/v2 => ../core

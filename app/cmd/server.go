@@ -91,6 +91,7 @@ type serverConfig struct {
 	ACL                   serverConfigACL             `mapstructure:"acl"`
 	Outbounds             []serverConfigOutboundEntry `mapstructure:"outbounds"`
 	UserOutbounds         map[string]string           `mapstructure:"userOutbounds"`
+	UserOutboundsFile     string                      `mapstructure:"userOutboundsFile"`
 	TrafficStats          serverConfigTrafficStats    `mapstructure:"trafficStats"`
 	Masquerade            serverConfigMasquerade      `mapstructure:"masquerade"`
 }
@@ -268,12 +269,19 @@ type serverConfigOutboundHTTP struct {
 	Insecure bool   `mapstructure:"insecure"`
 }
 
+type serverConfigOutboundShadowsocks2022 struct {
+	Addr     string `mapstructure:"addr"`
+	Method   string `mapstructure:"method"`
+	Password string `mapstructure:"password"`
+}
+
 type serverConfigOutboundEntry struct {
-	Name   string                     `mapstructure:"name"`
-	Type   string                     `mapstructure:"type"`
-	Direct serverConfigOutboundDirect `mapstructure:"direct"`
-	SOCKS5 serverConfigOutboundSOCKS5 `mapstructure:"socks5"`
-	HTTP   serverConfigOutboundHTTP   `mapstructure:"http"`
+	Name            string                              `mapstructure:"name"`
+	Type            string                              `mapstructure:"type"`
+	Direct          serverConfigOutboundDirect          `mapstructure:"direct"`
+	SOCKS5          serverConfigOutboundSOCKS5          `mapstructure:"socks5"`
+	HTTP            serverConfigOutboundHTTP            `mapstructure:"http"`
+	Shadowsocks2022 serverConfigOutboundShadowsocks2022 `mapstructure:"shadowsocks2022"`
 }
 
 type serverConfigTrafficStats struct {
@@ -1264,6 +1272,14 @@ func serverConfigOutboundHTTPToOutbound(c serverConfigOutboundHTTP) (outbounds.P
 	return outbounds.NewHTTPOutbound(c.URL, c.Insecure)
 }
 
+func serverConfigOutboundShadowsocks2022ToOutbound(c serverConfigOutboundShadowsocks2022) (outbounds.PluggableOutbound, error) {
+	ob, err := outbounds.NewShadowsocks2022Outbound(c.Addr, c.Method, c.Password)
+	if err != nil {
+		return nil, configError{Field: "outbounds.shadowsocks2022", Err: err}
+	}
+	return ob, nil
+}
+
 func (c *serverConfig) fillRequestHook(hyConfig *server.Config) error {
 	if c.Sniff.Enable {
 		s := &sniff.Sniffer{
@@ -1302,6 +1318,101 @@ func userOutboundMap(userOutbounds map[string]string, obs []outbounds.OutboundEn
 	return m, nil
 }
 
+// userOutboundsFileEntry/Doc — the on-disk shape of userOutboundsFile, written by the
+// control plane (reconciler render.buildHy2Funnel): authID -> the outbound that user egresses through.
+type userOutboundsFileEntry struct {
+	Type     string `json:"type"`
+	Addr     string `json:"addr"`
+	Method   string `json:"method"`
+	Password string `json:"password"`
+}
+
+type userOutboundsFileDoc struct {
+	Outbounds map[string]userOutboundsFileEntry `json:"outbounds"`
+}
+
+// rejectOutbound is what an authID without a usable file entry gets. Not nil: core/server
+// reads nil as "no per-user outbound" and falls back to the general one, which is exactly
+// the leak past the split filter this file exists to prevent.
+var rejectOutbound server.Outbound = &outbounds.PluggableOutboundAdapter{PluggableOutbound: outbounds.NewRejectOutbound()}
+
+// userOutboundsFile is the sidecar source of per-user outbounds, reloaded on mtime+size
+// change like hy2auth's creds file. Fail-closed: only a valid entry gets an outbound, so a
+// subscriber arriving or leaving is a file rewrite, never a hysteria restart.
+type userOutboundsFile struct {
+	path string
+
+	mu     sync.Mutex
+	mtime  time.Time
+	size   int64
+	loaded bool
+	obs    map[string]server.Outbound
+}
+
+func (f *userOutboundsFile) outboundFor(authID string) server.Outbound {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reload()
+	if ob, ok := f.obs[authID]; ok {
+		return ob
+	}
+	return rejectOutbound
+}
+
+func (f *userOutboundsFile) reload() {
+	var mtime time.Time
+	var size int64
+	if fi, err := os.Stat(f.path); err == nil {
+		mtime, size = fi.ModTime(), fi.Size()
+	}
+	if f.loaded && size == f.size && mtime.Equal(f.mtime) {
+		return
+	}
+	f.loaded, f.mtime, f.size, f.obs = true, mtime, size, f.build()
+}
+
+// build turns every valid entry into an outbound. Whatever fails is left out of the map
+// and therefore blocked: one bad entry blocks its own authID, a bad file blocks all of
+// its users.
+func (f *userOutboundsFile) build() map[string]server.Outbound {
+	data, err := os.ReadFile(f.path)
+	if err != nil {
+		logger.Error("failed to read user outbounds file", zap.String("file", f.path), zap.Error(err))
+		return nil
+	}
+	var doc userOutboundsFileDoc
+	if err := json.Unmarshal(data, &doc); err != nil {
+		logger.Error("failed to parse user outbounds file", zap.String("file", f.path), zap.Error(err))
+		return nil
+	}
+	obs := make(map[string]server.Outbound, len(doc.Outbounds))
+	for authID, entry := range doc.Outbounds {
+		ob, err := userOutboundsFileEntryToOutbound(entry)
+		if err != nil {
+			logger.Error("invalid user outbounds file entry",
+				zap.String("file", f.path), zap.String("authID", authID), zap.Error(err))
+			continue
+		}
+		obs[authID] = ob
+	}
+	return obs
+}
+
+func userOutboundsFileEntryToOutbound(e userOutboundsFileEntry) (server.Outbound, error) {
+	var ob outbounds.PluggableOutbound
+	var err error
+	switch strings.ToLower(e.Type) {
+	case "shadowsocks2022":
+		ob, err = outbounds.NewShadowsocks2022Outbound(e.Addr, e.Method, e.Password)
+	default:
+		err = fmt.Errorf("unsupported outbound type %q", e.Type)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &outbounds.PluggableOutboundAdapter{PluggableOutbound: ob}, nil
+}
+
 func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 	// Resolver, ACL, actual outbound are all implemented through the Outbound interface.
 	// Depending on the config, we build a chain like this:
@@ -1330,6 +1441,8 @@ func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 				ob, err = serverConfigOutboundSOCKS5ToOutbound(entry.SOCKS5)
 			case "http":
 				ob, err = serverConfigOutboundHTTPToOutbound(entry.HTTP)
+			case "shadowsocks2022":
+				ob, err = serverConfigOutboundShadowsocks2022ToOutbound(entry.Shadowsocks2022)
 			default:
 				err = configError{Field: "outbounds.type", Err: errors.New("unsupported outbound type")}
 			}
@@ -1341,7 +1454,13 @@ func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 	}
 
 	// Per-user outbounds
-	if len(c.UserOutbounds) > 0 {
+	switch {
+	case c.UserOutboundsFile != "" && len(c.UserOutbounds) > 0:
+		return configError{Field: "userOutboundsFile", Err: errors.New("cannot set both userOutbounds and userOutboundsFile")}
+	case c.UserOutboundsFile != "":
+		f := &userOutboundsFile{path: c.UserOutboundsFile}
+		hyConfig.OutboundForAuthID = f.outboundFor
+	case len(c.UserOutbounds) > 0:
 		uobs, err := userOutboundMap(c.UserOutbounds, obs)
 		if err != nil {
 			return err

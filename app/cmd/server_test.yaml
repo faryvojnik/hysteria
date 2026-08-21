@@ -156,9 +156,16 @@ outbounds:
     http:
       url: https://eyy.lmao:4443/goofy
       insecure: true
+  - name: securestuff
+    type: shadowsocks2022
+    shadowsocks2022:
+      addr: ss.lmao.wtf:8388
+      method: 2022-blake3-aes-128-gcm
+      password: 8JCsPssfgS8tiRwiMlhARg==
 
 userOutbounds:
   hackerman: badstuff
+userOutboundsFile: /etc/hysteria/user-outbounds.yaml
 
 trafficStats:
   listen: :9999

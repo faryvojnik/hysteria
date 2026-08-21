@@ -117,6 +117,12 @@ func (a *aclEngine) CheckUDP(reqAddr *AddrEx) error {
 
 type aclRejectOutbound struct{}
 
+// NewRejectOutbound returns an outbound that rejects everything - for callers outside
+// the ACL that need a fail-closed outbound (per-user outbounds file).
+func NewRejectOutbound() PluggableOutbound {
+	return &aclRejectOutbound{}
+}
+
 func (a *aclRejectOutbound) TCP(reqAddr *AddrEx) (net.Conn, error) {
 	return nil, errRejected
 }

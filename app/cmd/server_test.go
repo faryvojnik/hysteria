@@ -199,8 +199,18 @@ func TestServerConfig(t *testing.T) {
 					Insecure: true,
 				},
 			},
+			{
+				Name: "securestuff",
+				Type: "shadowsocks2022",
+				Shadowsocks2022: serverConfigOutboundShadowsocks2022{
+					Addr:     "ss.lmao.wtf:8388",
+					Method:   "2022-blake3-aes-128-gcm",
+					Password: "8JCsPssfgS8tiRwiMlhARg==",
+				},
+			},
 		},
-		UserOutbounds: map[string]string{"hackerman": "badstuff"},
+		UserOutbounds:     map[string]string{"hackerman": "badstuff"},
+		UserOutboundsFile: "/etc/hysteria/user-outbounds.yaml",
 		TrafficStats: serverConfigTrafficStats{
 			Listen: ":9999",
 			Secret: "its_me_mario",
