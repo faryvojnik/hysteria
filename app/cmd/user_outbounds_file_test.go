@@ -19,15 +19,15 @@ func testPSK(seed string) string {
 }
 
 // funnelFile writes a userOutboundsFile-shaped doc with one entry per authID.
-func funnelFile(t *testing.T, path string, authIDs ...string) {
+func funnelFile(t *testing.T, path, addr string, authIDs ...string) {
 	t.Helper()
 	entries := ""
 	for i, id := range authIDs {
 		if i > 0 {
 			entries += ","
 		}
-		entries += fmt.Sprintf(`%q:{"type":"shadowsocks2022","addr":"127.0.0.1:39000",`+
-			`"method":"2022-blake3-aes-256-gcm","password":"%s:%s"}`, id, testPSK("server"), testPSK(id))
+		entries += fmt.Sprintf(`%q:{"type":"shadowsocks2022","addr":%q,`+
+			`"method":"2022-blake3-aes-256-gcm","password":"%s:%s"}`, id, addr, testPSK("server"), testPSK(id))
 	}
 	if err := os.WriteFile(path, []byte(`{"outbounds":{`+entries+`}}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func assertBlocked(t *testing.T, ob server.Outbound, authID string) {
 func TestUserOutboundsFile(t *testing.T) {
 	logger = zap.NewNop()
 	path := filepath.Join(t.TempDir(), "funnel.json")
-	funnelFile(t, path, "42", "43")
+	funnelFile(t, path, "127.0.0.1:39000", "42", "43")
 	f := &userOutboundsFile{path: path}
 
 	for _, id := range []string{"42", "43"} {
@@ -56,7 +56,7 @@ func TestUserOutboundsFile(t *testing.T) {
 	assertBlocked(t, f.outboundFor("999"), "999")
 
 	// A new subscriber is picked up on the rewrite, without a restart.
-	funnelFile(t, path, "42", "43", "999")
+	funnelFile(t, path, "127.0.0.1:39000", "42", "43", "999")
 	if ob := f.outboundFor("999"); ob == rejectOutbound {
 		t.Fatal("authID 999 still blocked after the file gained it")
 	}

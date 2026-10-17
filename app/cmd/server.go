@@ -94,6 +94,10 @@ type serverConfig struct {
 	UserOutboundsFile     string                      `mapstructure:"userOutboundsFile"`
 	TrafficStats          serverConfigTrafficStats    `mapstructure:"trafficStats"`
 	Masquerade            serverConfigMasquerade      `mapstructure:"masquerade"`
+
+	// UserOutboundsFileFallback: a userOutboundsFile entry whose funnel can't be dialed egresses via the
+	// general outbound (Resolver(ACL(...))) instead of failing. Exit nodes only; see funnel_fallback.go.
+	UserOutboundsFileFallback bool `mapstructure:"userOutboundsFileFallback"`
 }
 
 type serverConfigRealm struct {
@@ -1340,7 +1344,8 @@ var rejectOutbound server.Outbound = &outbounds.PluggableOutboundAdapter{Pluggab
 // change like hy2auth's creds file. Fail-closed: only a valid entry gets an outbound, so a
 // subscriber arriving or leaving is a file rewrite, never a hysteria restart.
 type userOutboundsFile struct {
-	path string
+	path     string
+	fallback *funnelFallback // nil = no fallback, a funnel dial failure fails the stream
 
 	mu     sync.Mutex
 	mtime  time.Time
@@ -1393,12 +1398,15 @@ func (f *userOutboundsFile) build() map[string]server.Outbound {
 				zap.String("file", f.path), zap.String("authID", authID), zap.Error(err))
 			continue
 		}
-		obs[authID] = ob
+		if f.fallback != nil {
+			ob = f.fallback.wrap(ob)
+		}
+		obs[authID] = &outbounds.PluggableOutboundAdapter{PluggableOutbound: ob}
 	}
 	return obs
 }
 
-func userOutboundsFileEntryToOutbound(e userOutboundsFileEntry) (server.Outbound, error) {
+func userOutboundsFileEntryToOutbound(e userOutboundsFileEntry) (outbounds.PluggableOutbound, error) {
 	var ob outbounds.PluggableOutbound
 	var err error
 	switch strings.ToLower(e.Type) {
@@ -1407,10 +1415,7 @@ func userOutboundsFileEntryToOutbound(e userOutboundsFileEntry) (server.Outbound
 	default:
 		err = fmt.Errorf("unsupported outbound type %q", e.Type)
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &outbounds.PluggableOutboundAdapter{PluggableOutbound: ob}, nil
+	return ob, err
 }
 
 func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
@@ -1454,12 +1459,15 @@ func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 	}
 
 	// Per-user outbounds
+	var uFile *userOutboundsFile
 	switch {
 	case c.UserOutboundsFile != "" && len(c.UserOutbounds) > 0:
 		return configError{Field: "userOutboundsFile", Err: errors.New("cannot set both userOutbounds and userOutboundsFile")}
+	case c.UserOutboundsFileFallback && c.UserOutboundsFile == "":
+		return configError{Field: "userOutboundsFileFallback", Err: errors.New("requires userOutboundsFile")}
 	case c.UserOutboundsFile != "":
-		f := &userOutboundsFile{path: c.UserOutboundsFile}
-		hyConfig.OutboundForAuthID = f.outboundFor
+		uFile = &userOutboundsFile{path: c.UserOutboundsFile}
+		hyConfig.OutboundForAuthID = uFile.outboundFor
 	case len(c.UserOutbounds) > 0:
 		uobs, err := userOutboundMap(c.UserOutbounds, obs)
 		if err != nil {
@@ -1500,6 +1508,7 @@ func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 		// No ACL, use the first outbound
 		uOb = obs[0].Outbound
 	}
+	routeOnly := uOb // the ACL before any resolver, for userOutboundsFileFallback
 
 	// Resolver
 	switch strings.ToLower(c.Resolver.Type) {
@@ -1539,6 +1548,9 @@ func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 		uOb = outbounds.NewSpeedtestHandler(uOb)
 	}
 
+	if c.UserOutboundsFileFallback {
+		uFile.fallback = &funnelFallback{fallback: uOb, routeOnly: routeOnly}
+	}
 	hyConfig.Outbound = &outbounds.PluggableOutboundAdapter{PluggableOutbound: uOb}
 	return nil
 }

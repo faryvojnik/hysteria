@@ -209,8 +209,9 @@ func TestServerConfig(t *testing.T) {
 				},
 			},
 		},
-		UserOutbounds:     map[string]string{"hackerman": "badstuff"},
-		UserOutboundsFile: "/etc/hysteria/user-outbounds.yaml",
+		UserOutbounds:             map[string]string{"hackerman": "badstuff"},
+		UserOutboundsFile:         "/etc/hysteria/user-outbounds.yaml",
+		UserOutboundsFileFallback: true,
 		TrafficStats: serverConfigTrafficStats{
 			Listen: ":9999",
 			Secret: "its_me_mario",

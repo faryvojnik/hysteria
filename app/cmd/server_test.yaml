@@ -166,6 +166,7 @@ outbounds:
 userOutbounds:
   hackerman: badstuff
 userOutboundsFile: /etc/hysteria/user-outbounds.yaml
+userOutboundsFileFallback: true
 
 trafficStats:
   listen: :9999
